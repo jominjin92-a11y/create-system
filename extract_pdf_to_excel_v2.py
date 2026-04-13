@@ -35,37 +35,28 @@ def normalize_text(text: str) -> str:
 
 
 def remove_reference_phrases(text: str) -> str:
-    """
-    [그림 x-y], [표 x-y] 참조문장 삭제
-    예: "그림 2-1과 같이 설치한다" -> "설치한다"
-    """
+    """[그림 x-y], [표 x-y] 참조문장 삭제"""
     if not text:
         return ''
     
-    # "[그림/표 x-y]와 같이/에 제시된/의 오른쪽" 등 통째로 삭제
     text = re.sub(r'\[(?:그림|표|Figure|Table)\s+\d+-\d+\][와의이로을를으].*?(?=[.。！？?!\n]|$)', '', text)
-    
-    # "그림 2-1에서 볼 수 있듯이" 삭제
     text = re.sub(r'(?:그림|표|Figure|Table)\s+\d+-\d+[에서를].*?(?=[.。！？?!\n]|$)', '', text)
-    
-    # "[그림/표 x-y]" 패턴이 단독으로 있으면 삭제
     text = re.sub(r'\[(?:그림|표|Figure|Table)\s+\d+-\d+\]', '', text)
     
     return clean_text(text)
 
 
 def remove_diagram_labels(text: str) -> str:
-    """
-    도면/표 내부의 짧은 라벨 제거
-    예: 건축주, 기둥 중심선, 대지 경계, 귀 규준틀, 선 중심, 벽선, 기준점 등
-    """
+    """도면/표 내부의 짧은 라벨 제거"""
     if not text:
         return ''
+    
+    text = text.strip()
     
     diagram_labels = [
         '건축주', '기둥 중심선', '대지 경계', '귀 규준틀', '선 중심', '벽선', '기준점',
         '줄쳐보기', '레벨 조정', '높이 조정', '수직 조정', '수평 조정', '위치 조정',
-        '재료', '두께', '폭', '높이', '���이', '간격', '거리', '각도',
+        '재료', '두께', '폭', '높이', '깊이', '간격', '거리', '각도',
         '주요 재료', '마감재', '시공 방법', '검사 항목', '품질 기준',
         '위치 콘크리트', '모래 깔기', '다짐', '정리', '청소', '처리',
         '지하', '기초', '기초 콘크리트', '쇄석', '모래', '다짐층',
@@ -73,12 +64,9 @@ def remove_diagram_labels(text: str) -> str:
         'N', 'C', 'GL', 'EL', 'R', 'D', 'W', 'H', 'L', 'A',
     ]
     
-    # 라벨만 있는 라인 제거 (예: "건축주", "기둥 중심선")
     for label in diagram_labels:
-        # 라벨이 라인 전체면 제거
-        if text.strip() == label:
+        if text == label:
             return ''
-        # 라벨 + 숫자/부호만 있으면 제거 (예: "N: 100m", "H: 5cm")
         if re.match(rf'^{re.escape(label)}[:\s:：]*[\d\-\/\.]+.*$', text):
             return ''
     
@@ -86,96 +74,33 @@ def remove_diagram_labels(text: str) -> str:
 
 
 def remove_formula_lines(text: str) -> str:
-    """
-    식/공식 라인 제거
-    예: "A = B × C", "여기서 N: 기둥 개수"
-    """
+    """식/공식 라인 제거"""
     if not text:
         return ''
     
     text = text.strip()
     
-    # 식/공식 패턴 (=, ×, ÷, +, - 등)
     if re.match(r'^[A-Z가-힣]\s*[=×÷±∓]+', text):
         return ''
     
-    # "여기서 X: 설명" 패턴
     if re.match(r'^(?:여기서|단|단\s+|where)\s+[A-Z가-힣].*?:', text):
         return ''
     
-    # 단순 숫자식
     if re.match(r'^[\d()\s\+\-\*/\.]+$', text):
         return ''
     
     return text
 
 
-def split_into_sentences(text: str) -> List[str]:
-    """
-    텍스트를 문장 단위로 분할
-    마침표(. 。 ！ ？), 개행 기준
-    """
-    if not text:
-        return []
-    
-    sentences = []
-    
-    for line in text.split('\n'):
-        line = line.strip()
-        if not line:
-            continue
-        
-        # 번호 항목은 그대로 유지
-        if re.match(r'^[①-⑳⑴-⑽]\s+', line) or re.match(r'^\(?\d+\)\s+', line):
-            sentences.append(line)
-            continue
-        
-        # 마침표로 분리
-        current = []
-        for i, char in enumerate(line):
-            current.append(char)
-            
-            if char in '.。！？?!':
-                if i + 1 < len(line):
-                    next_char = line[i + 1]
-                    
-                    # 공백 후 글자
-                    if next_char == ' ' and i + 2 < len(line):
-                        after_space = line[i + 2]
-                        if re.match(r'[가-힣A-Z0-9①-⑳⑴-⑽]', after_space):
-                            sent = ''.join(current).strip()
-                            if len(sent) > 5:
-                                sentences.append(sent)
-                            current = []
-                    # 공백 없이 바로 글자
-                    elif re.match(r'[가-힣A-Z0-9①-⑳⑴-⑽]', next_char):
-                        sent = ''.join(current).strip()
-                        if len(sent) > 5:
-                            sentences.append(sent)
-                        current = []
-        
-        if current:
-            sent = ''.join(current).strip()
-            if len(sent) > 5:
-                sentences.append(sent)
-    
-    return sentences
-
-
 def is_heading_only(text: str) -> bool:
-    """
-    제목/번호만 있는 라인 판별
-    예: "(1) 기준점", "(2) 줄쳐보기"
-    """
+    """제목/번호만 있는 라인 판별"""
     text = text.strip()
     
-    # 번호만 있음
     if re.match(r'^[①-⑳⑴-⑽]\s*$', text):
         return True
     if re.match(r'^\(?\d+\)\s*$', text):
         return True
     
-    # 번호 + 제목만 (짧은 텍스트)
     if re.match(r'^[①-⑳⑴-⑽]\s+[가-힣A-Za-z\s]+$', text) and len(text) < 20:
         return True
     if re.match(r'^\(?\d+\)\s+[가-힣A-Za-z\s]+$', text) and len(text) < 20:
@@ -185,7 +110,86 @@ def is_heading_only(text: str) -> bool:
 
 
 # =========================================================
-# 2. PDF 라인 추출
+# 2. 문장 분리 (개선된 버전)
+# =========================================================
+
+def split_into_sentences(text: str) -> List[str]:
+    """
+    텍스트를 문장 단위로 분할 (강화된 버전)
+    마침표, 물음표, 느낌표, '다.', '습니다.' 등 기준
+    """
+    if not text:
+        return []
+    
+    sentences = []
+    current = []
+    
+    for i, char in enumerate(text):
+        current.append(char)
+        
+        # 종결 문자 찾기
+        is_end = char in '.。！？?!'
+        
+        # '다.' 종결형 처리
+        if char == '.' and i > 0:
+            if text[i-1] == '다':
+                is_end = True
+        
+        if is_end:
+            # 다음 문자 확인
+            if i + 1 < len(text):
+                next_char = text[i + 1]
+                
+                # 공백 후 글자/번호면 분리
+                if next_char == ' ':
+                    if i + 2 < len(text):
+                        after_space = text[i + 2]
+                        if re.match(r'[가-힣A-Z0-9①-⑳⑴-⑽]', after_space):
+                            sent = ''.join(current).strip()
+                            if len(sent) > 3:
+                                sentences.append(sent)
+                            current = []
+                # 개행 후 글자면 분리
+                elif next_char == '\n':
+                    sent = ''.join(current).strip()
+                    if len(sent) > 3:
+                        sentences.append(sent)
+                    current = []
+                    # 개행 문자 건너뛰기
+                    continue
+                # 공백 없이 바로 글자/번호면 분리
+                elif re.match(r'[가-힣A-Z0-9①-⑳⑴-⑽]', next_char):
+                    sent = ''.join(current).strip()
+                    if len(sent) > 3:
+                        sentences.append(sent)
+                    current = []
+            else:
+                # 텍스트 끝
+                sent = ''.join(current).strip()
+                if len(sent) > 3:
+                    sentences.append(sent)
+                current = []
+        
+        # 개행도 분리점
+        elif char == '\n':
+            if current and len(current) > 1:
+                sent = ''.join(current[:-1]).strip()  # 개행 문자 제외
+                if len(sent) > 3 and not sent.endswith(('.', '。', '!', '?', '！', '？')):
+                    # 개행인데 마침표 없으면 버림 (불완전한 문장)
+                    pass
+            current = []
+    
+    # 마지막 문장
+    if current:
+        sent = ''.join(current).strip()
+        if len(sent) > 3:
+            sentences.append(sent)
+    
+    return sentences
+
+
+# =========================================================
+# 3. PDF 라인 추출
 # =========================================================
 
 def _is_two_column_page(words: List[Dict[str, Any]], page_width: float) -> bool:
@@ -297,7 +301,7 @@ def extract_lines_with_layout(pdf_path: str) -> List[Dict[str, Any]]:
 
 
 # =========================================================
-# 3. 문서 구조 추출
+# 4. 문서 구조 추출
 # =========================================================
 
 def extract_document_structure(lines: List[Dict[str, Any]], pdf_path: str) -> Dict[str, List[Dict[str, Any]]]:
@@ -409,20 +413,20 @@ def fill_subsection_texts(structure: Dict[str, List[Dict[str, Any]]], lines: Lis
 
 
 # =========================================================
-# 4. 개선된 Text Chunk 빌딩 (v2)
+# 5. 문장 단위 Text Row 생성 (NEW)
 # =========================================================
 
-def build_text_chunks_v2(subsections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def build_text_sentences(subsections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    개선된 semantic chunk 분할
+    문장 단위로 text row 생성
     - 참조문장 제거
     - 도면 라벨 제거
     - 공식 라인 제거
-    - 번호 제목은 다음 문단과 병합
-    - 1~4 문장 단위
+    - 번호 제목은 다음 문장과만 병합 (1회만)
+    - 각 행 = 1 문장
     """
-    chunks = []
-    chunk_id = 1
+    sentences_list = []
+    sent_id = 1
     
     for sub in subsections:
         raw_text = sub.get('text', '').strip()
@@ -434,7 +438,7 @@ def build_text_chunks_v2(subsections: List[Dict[str, Any]]) -> List[Dict[str, An
         if not text:
             continue
         
-        # Step 2: 도면 라벨 제거
+        # Step 2: 라인별 노이즈 제거
         lines = []
         for line in text.split('\n'):
             line = line.strip()
@@ -444,44 +448,42 @@ def build_text_chunks_v2(subsections: List[Dict[str, Any]]) -> List[Dict[str, An
             line = remove_diagram_labels(line)
             line = remove_formula_lines(line)
             
-            if line and len(line) >= 5:
+            if line and len(line) >= 3:
                 lines.append(line)
         
         if not lines:
             continue
         
-        # Step 3: 문장 단위로 분할하고 청크 생성
+        # Step 3: 텍스트를 다시 문장으로 분할
         text = '\n'.join(lines)
-        sentences = split_into_sentences(text)
+        raw_sentences = split_into_sentences(text)
         
-        if not sentences:
+        if not raw_sentences:
             continue
         
-        # Step 4: 제목-내용 병합 및 청크 그룹화
-        merged_sentences = []
+        # Step 4: 번호 제목과 다음 문장 병합
+        final_sentences = []
         i = 0
-        while i < len(sentences):
-            sent = sentences[i]
+        while i < len(raw_sentences):
+            sent = raw_sentences[i]
             
-            # 번호 제목만 있으면 다음 문장과 병합
-            if is_heading_only(sent) and i + 1 < len(sentences):
-                merged = sent + ' ' + sentences[i + 1]
-                merged_sentences.append(merged)
+            # 번호 제목만 있으면 다음 문장과 병합 (1회만)
+            if is_heading_only(sent) and i + 1 < len(raw_sentences):
+                merged = sent + ' ' + raw_sentences[i + 1]
+                final_sentences.append(merged)
                 i += 2
             else:
-                merged_sentences.append(sent)
+                final_sentences.append(sent)
                 i += 1
         
-        # Step 5: 2~4 문장 단위로 청크 생성
-        for j in range(0, len(merged_sentences), 2):
-            chunk_sents = merged_sentences[j:j+2]
-            chunk_text = ' '.join(chunk_sents)
-            
-            if len(chunk_text) < 10:  # 너무 짧으면 제외
+        # Step 5: 각 문장을 1 row로
+        for sent in final_sentences:
+            sent = sent.strip()
+            if len(sent) < 4:  # 너무 짧으면 제외
                 continue
             
-            chunks.append({
-                'chunk_id': f'C_{chunk_id:05d}',
+            sentences_list.append({
+                'sent_id': f'S_{sent_id:05d}',
                 'subsection': sub['subsection'],
                 'subsection_title': sub['subsection_title'],
                 'section': sub['section'],
@@ -491,139 +493,15 @@ def build_text_chunks_v2(subsections: List[Dict[str, Any]]) -> List[Dict[str, An
                 'page_number': sub['page_number'],
                 'position': sub['position'],
                 'top': sub['top'],
-                'text': chunk_text,
+                'text': sent,
             })
-            chunk_id += 1
+            sent_id += 1
     
-    return chunks
+    return sentences_list
 
 
 # =========================================================
-# 5. 개선된 Figure 추출
-# =========================================================
-
-def split_figure_captions(text: str) -> List[str]:
-    """
-    한 줄에 여러 그림 캡션이 있으면 분리
-    예: "[그림 2-1] 기초 [그림 2-2] 기둥" -> 2개 캡션
-    """
-    if not text:
-        return []
-    
-    text = clean_text(text)
-    
-    # [그림 x-y] 패턴 찾기
-    matches = list(re.finditer(r'\[그림\s*\d+-\d+\]', text))
-    
-    if not matches:
-        return []
-    
-    if len(matches) == 1:
-        # 단일 캡션
-        caption = _clean_figure_caption(text)
-        return [caption] if caption and len(caption) >= 5 else []
-    
-    # 여러 캡션 분리
-    captions = []
-    for i, m in enumerate(matches):
-        start = m.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        cap_text = text[start:end].strip()
-        
-        caption = _clean_figure_caption(cap_text)
-        if caption and len(caption) >= 5:
-            captions.append(caption)
-    
-    return captions
-
-
-def _clean_figure_caption(text: str) -> str:
-    """그림 캡션 정제"""
-    text = clean_text(text)
-    
-    # '[그림' 앞의 본문 제거
-    m = re.search(r'\[그림\s*\d+-\d+\]', text)
-    if m:
-        text = text[m.start():]
-    
-    # 캡션 내 '출처' 이후 제거
-    text = re.sub(r'\s*출처\s*[:：]\s*\S+', '', text).strip()
-    text = re.sub(r'\s*[Ss]ource\s*[:：]\s*\S+', '', text).strip()
-    
-    # 본문 참조문장 제외 (엄격함)
-    if re.search(r'\[그림\s*\d+-\d+\][와의이로을를으]', text):
-        return ''
-    if re.search(r'\[그림\s*\d+-\d+\](?:의 오른쪽|의 왼쪽|과 같이|에 제시된|과 함께|을 참고)', text):
-        return ''
-    
-    return text
-
-
-def extract_figure_blocks_v2(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    개선된 그림 캡션 추출
-    - 여러 캡션 분리
-    - 실제 캡션만 (줄 시작이 [그림 x-y])
-    """
-    figures = []
-    fig_id = 1
-    
-    lines_by_col = defaultdict(list)
-    for line in lines:
-        lines_by_col[(line['page_num'], line.get('position', ''))].append(line)
-    
-    for key, col_lines in lines_by_col.items():
-        col_lines = sorted(col_lines, key=lambda x: x.get('top', 0))
-        
-        for idx, line in enumerate(col_lines):
-            txt = line['text'].strip()
-            
-            # 줄 시작이 [그림 x-y]인 경우만
-            if not re.match(r'^\[그림\s*\d+-\d+\]', txt):
-                continue
-            
-            # 여러 캡션 분리
-            captions = split_figure_captions(txt)
-            
-            if not captions:
-                continue
-            
-            # 앞의 문맥 수집
-            prev_context = []
-            j = idx - 1
-            while j >= 0 and len(prev_context) < 3:
-                prev_txt = col_lines[j]['text'].strip()
-                if (prev_txt
-                        and not re.match(r'^\[그림\s*\d+-\d+\]', prev_txt)
-                        and not re.match(r'^\[표\s*\d+-\d+\]', prev_txt)
-                        and not re.search(r'출처\s*[:：]', prev_txt)):
-                    prev_context.append(prev_txt)
-                j -= 1
-            prev_context.reverse()
-            
-            page_num = line['page_num']
-            cap_top = line.get('top', 0)
-            cap_pos = line.get('position', '')
-            
-            # 각 캡션을 별도 figure row로
-            for caption in captions:
-                figures.append({
-                    'title': caption,
-                    'type': 'figure',
-                    'page_number': page_num,
-                    'position': cap_pos,
-                    'top': cap_top,
-                    'caption_text': caption,
-                    'context_before_raw': '\n'.join(prev_context),
-                })
-                
-                logger.info(f'✅ p{page_num} - 그림: {caption[:30]}...')
-    
-    return figures
-
-
-# =========================================================
-# 6. 표 추출 (기존과 동일)
+# 6. 표 추출
 # =========================================================
 
 def _is_junk_table(rows: List[List]) -> bool:
@@ -696,7 +574,7 @@ def _line_matches_table_caption(text: str) -> bool:
 
 
 def extract_table_blocks_from_pdf(pdf_path: str, lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """표 추출 (caption 확인, 2행 2열 이상 valid table만)"""
+    """표 추출"""
     caption_lines = [l for l in lines if _line_matches_table_caption(l['text'])]
     caption_by_page = defaultdict(list)
     for cap in caption_lines:
@@ -809,7 +687,113 @@ def extract_table_blocks_from_pdf(pdf_path: str, lines: List[Dict[str, Any]]) ->
 
 
 # =========================================================
-# 7. 블록 소절 매핑 (보정 포함)
+# 7. 그림 추출
+# =========================================================
+
+def split_figure_captions(text: str) -> List[str]:
+    """한 줄에 여러 그림 캡션이 있으면 분리"""
+    if not text:
+        return []
+    
+    text = clean_text(text)
+    matches = list(re.finditer(r'\[그림\s*\d+-\d+\]', text))
+    
+    if not matches:
+        return []
+    
+    if len(matches) == 1:
+        caption = _clean_figure_caption(text)
+        return [caption] if caption and len(caption) >= 5 else []
+    
+    captions = []
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        cap_text = text[start:end].strip()
+        
+        caption = _clean_figure_caption(cap_text)
+        if caption and len(caption) >= 5:
+            captions.append(caption)
+    
+    return captions
+
+
+def _clean_figure_caption(text: str) -> str:
+    """그림 캡션 정제"""
+    text = clean_text(text)
+    
+    m = re.search(r'\[그림\s*\d+-\d+\]', text)
+    if m:
+        text = text[m.start():]
+    
+    text = re.sub(r'\s*출처\s*[:：]\s*\S+', '', text).strip()
+    text = re.sub(r'\s*[Ss]ource\s*[:：]\s*\S+', '', text).strip()
+    
+    if re.search(r'\[그림\s*\d+-\d+\][와의이로을를으]', text):
+        return ''
+    if re.search(r'\[그림\s*\d+-\d+\](?:의 오른쪽|의 왼쪽|과 같이|에 제시된|과 함께|을 참고)', text):
+        return ''
+    
+    return text
+
+
+def extract_figure_blocks_v2(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """그림 캡션 추출 (개별 caption)"""
+    figures = []
+    fig_id = 1
+    
+    lines_by_col = defaultdict(list)
+    for line in lines:
+        lines_by_col[(line['page_num'], line.get('position', ''))].append(line)
+    
+    for key, col_lines in lines_by_col.items():
+        col_lines = sorted(col_lines, key=lambda x: x.get('top', 0))
+        
+        for idx, line in enumerate(col_lines):
+            txt = line['text'].strip()
+            
+            if not re.match(r'^\[그림\s*\d+-\d+\]', txt):
+                continue
+            
+            captions = split_figure_captions(txt)
+            
+            if not captions:
+                continue
+            
+            prev_context = []
+            j = idx - 1
+            while j >= 0 and len(prev_context) < 3:
+                prev_txt = col_lines[j]['text'].strip()
+                if (prev_txt
+                        and not re.match(r'^\[그림\s*\d+-\d+\]', prev_txt)
+                        and not re.match(r'^\[표\s*\d+-\d+\]', prev_txt)
+                        and not re.search(r'출처\s*[:：]', prev_txt)):
+                    prev_context.append(prev_txt)
+                j -= 1
+            prev_context.reverse()
+            
+            page_num = line['page_num']
+            cap_top = line.get('top', 0)
+            cap_pos = line.get('position', '')
+            
+            for caption in captions:
+                figures.append({
+                    'title': caption,
+                    'type': 'figure',
+                    'page_number': page_num,
+                    'position': cap_pos,
+                    'top': cap_top,
+                    'caption_text': caption,
+                    'context_before_raw': '\n'.join(prev_context),
+                })
+                
+                logger.info(f'✅ p{page_num} - 그림: {caption[:30]}...')
+    
+    return figures
+
+
+# =========================================================
+# 8. 블록 소절 매핑
 # =========================================================
 
 def map_blocks_to_subsections(structure: Dict[str, List[Dict[str, Any]]], blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -827,7 +811,6 @@ def map_blocks_to_subsections(structure: Dict[str, List[Dict[str, Any]]], blocks
         y = info.get('top', 0)
         blk_key = (page, pos_order(pos), y)
         
-        # 정확한 매칭
         matched = None
         for sub in global_subs:
             sub_key = (sub['page_number'], pos_order(sub.get('position', 'left')), sub.get('top', 0))
@@ -836,7 +819,6 @@ def map_blocks_to_subsections(structure: Dict[str, List[Dict[str, Any]]], blocks
             else:
                 break
         
-        # 매칭 실패 시 보정
         if not matched:
             for sub in reversed(global_subs):
                 if sub['page_number'] == page and sub['position'] == pos:
@@ -888,11 +870,11 @@ def map_blocks_to_subsections(structure: Dict[str, List[Dict[str, Any]]], blocks
 
 
 # =========================================================
-# 8. 문제 유형 분류
+# 9. 문제 유형 분류
 # =========================================================
 
 def classify_question_type(text: str) -> str:
-    """문제 유형 분류 (chunk 단위)"""
+    """문제 유형 분류"""
     t = text.strip()
     if not t:
         return '특징'
@@ -914,19 +896,19 @@ def classify_question_type(text: str) -> str:
 
 
 # =========================================================
-# 9. Generation 행 생성
+# 10. Generation 행 생성
 # =========================================================
 
-def build_generation_rows(text_chunks: List[Dict[str, Any]], 
+def build_generation_rows(text_sentences: List[Dict[str, Any]], 
                           mapped_tables: List[Dict[str, Any]],
                           source_file: str) -> pd.DataFrame:
-    """Generation_Input 시트 (text chunk 단위)"""
+    """Generation_Input 시트 (문장 단위 + 표 단위)"""
     rows = []
     gen_idx = 1
     
-    # Text chunks
-    for chunk in text_chunks:
-        text = chunk.get('text', '').strip()
+    # Text sentences (1 row = 1 sentence)
+    for sent in text_sentences:
+        text = sent.get('text', '').strip()
         if not text:
             continue
         
@@ -934,17 +916,17 @@ def build_generation_rows(text_chunks: List[Dict[str, Any]],
         
         rows.append({
             'gen_id': f'GEN_{gen_idx:04d}',
-            'source_row_id': chunk.get('chunk_id', ''),
+            'source_row_id': sent.get('sent_id', ''),
             'use_for_generation_yn': 'Y',
             'source_type': 'text',
-            'page_no': chunk.get('page_number', ''),
-            'chapter': chunk.get('chapter', ''),
-            'chapter_title': chunk.get('chapter_title', ''),
-            'section': chunk.get('section', ''),
-            'section_title': chunk.get('section_title', ''),
-            'subsection': chunk.get('subsection', ''),
-            'subsection_title': chunk.get('subsection_title', ''),
-            'item_title': chunk.get('subsection_title', ''),
+            'page_no': sent.get('page_number', ''),
+            'chapter': sent.get('chapter', ''),
+            'chapter_title': sent.get('chapter_title', ''),
+            'section': sent.get('section', ''),
+            'section_title': sent.get('section_title', ''),
+            'subsection': sent.get('subsection', ''),
+            'subsection_title': sent.get('subsection_title', ''),
+            'item_title': sent.get('subsection_title', ''),
             'source_text': text,
             'source_text_raw': text,
             'source_text_normalized': normalize_text(text),
@@ -957,7 +939,7 @@ def build_generation_rows(text_chunks: List[Dict[str, Any]],
         })
         gen_idx += 1
     
-    # Tables
+    # Tables (1 row = 1 table)
     for idx, tbl in enumerate(mapped_tables, start=1):
         qtype = classify_question_type(tbl.get('title', ''))
         
@@ -990,7 +972,7 @@ def build_generation_rows(text_chunks: List[Dict[str, Any]],
 
 
 def build_support_visuals(mapped_figures: List[Dict[str, Any]], source_file: str) -> pd.DataFrame:
-    """Support_Visuals 시트 (개별 caption)"""
+    """Support_Visuals 시트 (1 row = 1 caption)"""
     rows = []
     
     for idx, fig in enumerate(mapped_figures, start=1):
@@ -1016,7 +998,7 @@ def build_support_visuals(mapped_figures: List[Dict[str, Any]], source_file: str
 
 
 # =========================================================
-# 10. 안내 시트
+# 11. 안내 시트
 # =========================================================
 
 def build_type_guidelines() -> pd.DataFrame:
@@ -1036,21 +1018,22 @@ def build_type_guidelines() -> pd.DataFrame:
 def build_readme(pdf_path: str, output_path: str) -> pd.DataFrame:
     """README 시트"""
     rows = [
-        ['스크립트', 'extract_pdf_v5_improved_chunks.py'],
+        ['스크립트', 'extract_pdf_v6_sentence_level.py'],
         ['입력 PDF', pdf_path],
         ['출력 Excel', output_path],
         ['시트 목록', 'Generation_Input, Type_Guidelines, Support_Visuals, README'],
-        ['텍스트 분할', 'Semantic chunk (1~4문, 참조/라벨/식 제거)'],
-        ['Figure Caption', '여러 caption 개별 split'],
-        ['Table', 'Caption 확인 + 2행2열 이상'],
+        ['텍스트 분할', '문장 단위 (1 row = 1 sentence)'],
+        ['문장 추출', '마침표/느낌표/물음표 기준 + 종결형'],
+        ['번호 제목', '다음 문장과만 1회 병합'],
+        ['Figure Caption', '캡션별 개별 row (1 row = 1 caption)'],
+        ['Table', '표별 개별 row (1 row = 1 table)'],
         ['Subsection 매핑', 'page + position + top (보정 포함)'],
-        ['정확도', '정확성 우선 (애매한 것 제외)'],
     ]
     return pd.DataFrame(rows, columns=['key', 'value'])
 
 
 # =========================================================
-# 11. Excel 저장
+# 12. Excel 저장
 # =========================================================
 
 def save_excel(output_path: str, df_gen: pd.DataFrame, df_type: pd.DataFrame,
@@ -1083,11 +1066,11 @@ def save_excel(output_path: str, df_gen: pd.DataFrame, df_type: pd.DataFrame,
 
 
 # =========================================================
-# 12. 메인
+# 13. 메인
 # =========================================================
 
 def main():
-    parser = argparse.ArgumentParser(description='PDF → Excel (v5: Improved Chunks)')
+    parser = argparse.ArgumentParser(description='PDF → Excel (v6: Sentence-level)')
     parser.add_argument('--pdf', required=True, help='입력 PDF')
     parser.add_argument('--output', default='generation_ready.xlsx', help='출력 Excel')
     args = parser.parse_args()
@@ -1100,7 +1083,7 @@ def main():
         return
     
     logger.info('=' * 70)
-    logger.info('📄 PDF 추출 시작 (v5: Improved Semantic Chunks)')
+    logger.info('📄 PDF 추출 시작 (v6: Sentence-level Text Extraction)')
     logger.info('=' * 70)
     
     # Step 1: 라인 추출
@@ -1118,18 +1101,18 @@ def main():
     fill_subsection_texts(structure, lines)
     logger.info('✅ 텍스트 수집 완료')
     
-    # Step 4: 개선된 텍스트 청킹
-    logger.info('Step 4: 개선된 semantic chunk 분할 중...')
-    text_chunks = build_text_chunks_v2(structure['subsections'])
-    logger.info(f'✅ {len(text_chunks)}개 chunk 생성')
+    # Step 4: 문장 단위 추출
+    logger.info('Step 4: 문장 단위로 text row 생성 중...')
+    text_sentences = build_text_sentences(structure['subsections'])
+    logger.info(f'✅ {len(text_sentences)}개 문장 행 생성')
     
     # Step 5: 표 추출
     logger.info('Step 5: 표 추출 중...')
     table_blocks = extract_table_blocks_from_pdf(pdf_path, lines)
     logger.info(f'✅ {len(table_blocks)}개 valid 표 추출')
     
-    # Step 6: 개선된 그림 추출
-    logger.info('Step 6: 개선된 그림 캡션 추출 중...')
+    # Step 6: 그림 추출
+    logger.info('Step 6: 그림 캡션 추출 중...')
     figure_blocks = extract_figure_blocks_v2(lines)
     logger.info(f'✅ {len(figure_blocks)}개 그림 캡션 추출')
     
@@ -1141,7 +1124,7 @@ def main():
     
     # Step 8: Generation 행 생성
     logger.info('Step 8: Generation_Input 행 생성 중...')
-    df_gen = build_generation_rows(text_chunks, mapped_tables, os.path.basename(pdf_path))
+    df_gen = build_generation_rows(text_sentences, mapped_tables, os.path.basename(pdf_path))
     logger.info(f'✅ {len(df_gen)}개 행 생성')
     
     # Step 9: Support_Visuals 생성
@@ -1163,7 +1146,7 @@ def main():
     logger.info('🎉 완료!')
     text_count = len(df_gen[df_gen['source_type'] == 'text'])
     table_count = len(df_gen[df_gen['source_type'] == 'table'])
-    logger.info(f'📝 Text chunk: {text_count}개')
+    logger.info(f'📝 Text sentence: {text_count}개')
     logger.info(f'📊 Table: {table_count}개')
     logger.info(f'🖼️  Figure: {len(df_visuals)}개')
     logger.info('=' * 70)
