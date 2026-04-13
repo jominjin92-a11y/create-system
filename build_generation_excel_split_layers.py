@@ -627,21 +627,44 @@ def map_blocks_to_subsections(structure: Dict[str, List[Dict[str, Any]]], blocks
 # =========================================================
 
 def split_sentences(text: str) -> List[str]:
+    """
+    [FIX 문장분리-v2] 강화된 한국어 문장 분리
+    """
     text = clean_text(text)
     if not text:
         return []
+    
     raw_parts = []
+    
     for line in text.split('\n'):
         line = line.strip()
         if not line:
             continue
+        
+        # 번호 패턴으로 시작하는 경우 - 그대로 추가
         if re.match(r'^[①-⑳⑴-⑽•·\-]\s*', line) or re.match(r'^\(?\d+\)\s*', line):
             raw_parts.append(line)
             continue
-        parts = re.split(r'(?<=[다요음])\.\s+|(?<=다)\s+(?=[①-⑳⑴-⑽])|(?<=다)\s+(?=\d+\))', line)
-        raw_parts.extend([p.strip() for p in parts if p.strip()])
+        
+        # 종결 표현 + 마침표 조합
+        # 예: "다. ", "습니다. ", "했다 ", "있다①" 등
+        sentence_endings = r'[다습니까했었되니나요것음]'  # 종결 표현
+        punctuation = r'[.。！？?!]'  # 마침표들
+        next_pattern = r'(?=[①-⑳⑴-⑽•\-]|\(\d+\)|\d+\)|[가-힣A-Z])'  # 다음 문장 시작
+        
+        # 패턴: "종결+마침 또는 종결+공백"으로 분리
+        parts = re.split(
+            rf'(?<={sentence_endings}){punctuation}?\s+{next_pattern}',
+            line,
+            flags=re.UNICODE
+        )
+        
+        for part in parts:
+            part = part.strip()
+            if part:
+                raw_parts.append(part)
+    
     return raw_parts
-
 
 def classify_question_type(text: str) -> str:
     t = text.strip()
@@ -962,6 +985,22 @@ def save_excel(output_path: str, df_gen: pd.DataFrame, df_pools: pd.DataFrame,
         df_type.to_excel(writer, index=False, sheet_name='Type_Guidelines')
         df_visuals.to_excel(writer, index=False, sheet_name='Support_Visuals')
         df_readme.to_excel(writer, index=False, sheet_name='README')
+        
+        # [FIX] 모든 시트의 열 너비 자동 조정
+        for sheet in writer.sheets.values():
+            for column in sheet.columns:
+                max_len = 0
+                col_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        cell_len = len(str(cell.value))
+                        if cell_len > max_len:
+                            max_len = cell_len
+                    except:
+                        pass
+                adjusted_width = min(max_len + 2, 50)  # 최대 50까지만
+                sheet.column_dimensions[col_letter].width = adjusted_width
+    
     logger.info('Saved: %s', output_path)
 
 
