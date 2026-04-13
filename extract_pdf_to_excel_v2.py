@@ -112,7 +112,6 @@ def _group_words_to_lines(words: List[Dict[str, Any]], y_tol: float = 3.0) -> Li
 def extract_lines_with_layout(pdf_path: str) -> List[Dict[str, Any]]:
     """
     PDF에서 레이아웃 정보 포함해 라인 추출
-    반환: [{text, page_num, position(left/right), top, x0, x1, bottom}, ...]
     """
     lines_out = []
     footer_margin = 60
@@ -155,7 +154,7 @@ def extract_lines_with_layout(pdf_path: str) -> List[Dict[str, Any]]:
 
 def extract_document_structure(lines: List[Dict[str, Any]], pdf_path: str) -> Dict[str, List[Dict[str, Any]]]:
     """
-    문서 구조 추출 (장/절/소절)
+    문서 구조 추출
     """
     chapter_no = os.path.splitext(os.path.basename(pdf_path))[0]
     m = re.match(r'(\d+)\.(.+)', chapter_no)
@@ -226,7 +225,7 @@ def extract_document_structure(lines: List[Dict[str, Any]], pdf_path: str) -> Di
 
 def fill_subsection_texts(structure: Dict[str, List[Dict[str, Any]]], lines: List[Dict[str, Any]]) -> None:
     """
-    각 소절에 원문 텍스트 채우기 (최대한 보존)
+    각 소절에 원문 텍스트 채우기
     """
     def line_sort_key(l):
         return (l['page_num'], 0 if l.get('position', 'left') == 'left' else 1, l.get('top', 0))
@@ -268,12 +267,149 @@ def fill_subsection_texts(structure: Dict[str, List[Dict[str, Any]]], lines: Lis
 
 
 # =========================================================
-# 4. 표 추출 (Raw 구조 유지)
+# 4. 텍스트 청킹 (Semantic Chunk 분할)
+# =========================================================
+
+def _is_reference_line(text: str) -> bool:
+    """참조문장 판별 ([그림 x-y], [표 x-y] 참조)"""
+    text = text.strip()
+    # "[표 x-y]와 같이", "[그림 x-y]의 왼쪽" 등
+    if re.search(r'\[(?:표|그림|Table|Figure)\s+\d+-\d+\][와의이로를]', text):
+        return True
+    if re.search(r'(?:표|그림|Table|Figure)\s+\d+-\d+(?:와|의|에|를|으로)', text):
+        return True
+    return False
+
+
+def _is_junk_line(text: str) -> bool:
+    """불필요한 라인 판별 (식, 공식, 너무 짧은 텍스트 등)"""
+    text = text.strip()
+    
+    # 너무 짧음
+    if len(text) < 5:
+        return True
+    
+    # 실제 캡션라인 (시작이 [표/그림])
+    if re.match(r'^\[(?:표|그림|Figure|Table)\s+\d+-\d+\]', text):
+        return True
+    
+    # 번호 항목 (이미 나눈 것)
+    if re.match(r'^[①-⑳⑴-⑽]\s+', text) or re.match(r'^\(?\d+\)\s+', text):
+        return False  # 번호 항목은 유지
+    
+    # 수식/공식만 있는 라인
+    if re.match(r'^[()×÷±∓=≠≤≥<>0-9+\-*/.\s%]+$', text):
+        return True
+    
+    return False
+
+
+def build_text_chunks(subsections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    소절 텍스트를 semantic chunk 단위로 분할
+    
+    chunk는:
+    - 연속된 문장들을 하나의 출제 포인트로 그룹화
+    - 참조문장, 캡션라인, 식/공식 제거
+    - 번호 항목(①, ②)은 별도 청크로 분할
+    """
+    chunks = []
+    chunk_id = 1
+    
+    for sub in subsections:
+        text = sub.get('text', '').strip()
+        if not text:
+            continue
+        
+        lines = text.split('\n')
+        current_chunk = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # 참조문장 제거
+            if _is_reference_line(line):
+                continue
+            
+            # 불필요한 라인 제거
+            if _is_junk_line(line):
+                continue
+            
+            # 번호 항목이면 현재 청크 저장 후 새로 시작
+            if re.match(r'^[①-⑳⑴-⑽]\s+', line) or re.match(r'^\(?\d+\)\s+', line):
+                if current_chunk:
+                    chunk_text = ' '.join(current_chunk)
+                    if len(chunk_text) >= 10:  # 최소 길이 체크
+                        chunks.append({
+                            'chunk_id': f'C_{chunk_id:05d}',
+                            'subsection': sub['subsection'],
+                            'subsection_title': sub['subsection_title'],
+                            'section': sub['section'],
+                            'section_title': sub['section_title'],
+                            'chapter': sub['chapter'],
+                            'chapter_title': sub['chapter_title'],
+                            'page_number': sub['page_number'],
+                            'position': sub['position'],
+                            'top': sub['top'],
+                            'text': chunk_text,
+                        })
+                        chunk_id += 1
+                    current_chunk = []
+                
+                # 번호 항목을 별도 청크로
+                if len(line) >= 5:
+                    chunks.append({
+                        'chunk_id': f'C_{chunk_id:05d}',
+                        'subsection': sub['subsection'],
+                        'subsection_title': sub['subsection_title'],
+                        'section': sub['section'],
+                        'section_title': sub['section_title'],
+                        'chapter': sub['chapter'],
+                        'chapter_title': sub['chapter_title'],
+                        'page_number': sub['page_number'],
+                        'position': sub['position'],
+                        'top': sub['top'],
+                        'text': line,
+                    })
+                    chunk_id += 1
+            else:
+                current_chunk.append(line)
+        
+        # 마지막 청크 저장
+        if current_chunk:
+            chunk_text = ' '.join(current_chunk)
+            if len(chunk_text) >= 10:
+                chunks.append({
+                    'chunk_id': f'C_{chunk_id:05d}',
+                    'subsection': sub['subsection'],
+                    'subsection_title': sub['subsection_title'],
+                    'section': sub['section'],
+                    'section_title': sub['section_title'],
+                    'chapter': sub['chapter'],
+                    'chapter_title': sub['chapter_title'],
+                    'page_number': sub['page_number'],
+                    'position': sub['position'],
+                    'top': sub['top'],
+                    'text': chunk_text,
+                })
+                chunk_id += 1
+    
+    return chunks
+
+
+# =========================================================
+# 5. 표 추출 (Valid table만)
 # =========================================================
 
 def _is_junk_table(rows: List[List]) -> bool:
-    """쓰레기 표 필터링 (목차 점선, 페이지 장식 등)"""
-    if not rows:
+    """쓰레기 표 필터링"""
+    if not rows or len(rows) < 2:  # 최소 2행 이상
+        return True
+    
+    # 최소 2열 이상
+    if not rows[0] or len(rows[0]) < 2:
         return True
     
     all_text = ' '.join(str(c) for row in rows for c in row if c)
@@ -306,20 +442,17 @@ def _merge_none_cells(rows: List[List]) -> List[List]:
         while len(row) < num_cols:
             row.append('')
     
-    # 왼쪽으로 채우기
     for r_idx, row in enumerate(filled):
         for c_idx in range(1, len(row)):
             if row[c_idx] is None:
                 row[c_idx] = row[c_idx - 1] if row[c_idx - 1] is not None else ''
     
-    # 위쪽으로 채우기
     for c_idx in range(num_cols):
         for r_idx in range(1, len(filled)):
             if c_idx < len(filled[r_idx]) and (filled[r_idx][c_idx] is None or filled[r_idx][c_idx] == ''):
                 if c_idx < len(filled[r_idx - 1]):
                     filled[r_idx][c_idx] = filled[r_idx - 1][c_idx]
     
-    # 중복 제거
     deduped = []
     for row in filled:
         if not deduped or row != deduped[-1]:
@@ -336,14 +469,13 @@ def _position_from_x(x_center: float, col_split: float, page_width: float) -> st
 
 
 def _line_matches_table_caption(text: str) -> bool:
-    """표 캡션 패턴 매칭"""
+    """표 캡션 패턴"""
     return bool(re.match(r'^\[표\s*\d+-\d+\]', text.strip()))
 
 
 def extract_table_blocks_from_pdf(pdf_path: str, lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    표 추출 (raw 구조 유지)
-    반환: [{title, type, page_number, position, top, table_rows, content_text_raw, ...}, ...]
+    표 추출 (caption 확인, 2행 2열 이상 valid table만)
     """
     caption_lines = [l for l in lines if _line_matches_table_caption(l['text'])]
     caption_by_page = defaultdict(list)
@@ -362,6 +494,9 @@ def extract_table_blocks_from_pdf(pdf_path: str, lines: List[Dict[str, Any]]) ->
     with pdfplumber.open(pdf_path) as pdf:
         for page_idx, page in enumerate(pdf.pages, start=1):
             page_caps = caption_by_page.get(page_idx, [])
+            if not page_caps:  # 캡션이 없으면 표 추출 안 함
+                continue
+            
             col_split = col_splits[page_idx]
             
             found = []
@@ -388,6 +523,10 @@ def extract_table_blocks_from_pdf(pdf_path: str, lines: List[Dict[str, Any]]) ->
                 raw_rows = tbl.extract() or []
                 raw_rows = _merge_none_cells(raw_rows)
                 
+                # Valid table 체크 (2행 2열 이상)
+                if len(raw_rows) < 2 or (raw_rows and len(raw_rows[0]) < 2):
+                    continue
+                
                 # 쓰레기 표 필터링
                 if _is_junk_table(raw_rows):
                     logger.info(f'[표 오탐 필터] p{page_idx} tbl{tbl_idx} 제거')
@@ -399,29 +538,43 @@ def extract_table_blocks_from_pdf(pdf_path: str, lines: List[Dict[str, Any]]) ->
                     if any(cell for cell in row):
                         cleaned_rows.append(row)
                 
-                if not cleaned_rows:
+                if not cleaned_rows or len(cleaned_rows) < 2:
                     continue
                 
-                # 캡션 매칭
+                # 캡션 매칭 (엄격함)
                 chosen_cap = None
                 best_score = None
                 for cap in page_caps:
                     cap_center_x = (cap.get('x0', 0) + cap.get('x1', cap.get('x0', 0))) / 2
                     cap_position = _position_from_x(cap_center_x, col_split, page.width)
+                    
+                    # position이 같고 위에 있어야 함
                     if cap_position != position:
                         continue
+                    
                     cap_top = cap.get('top', 0)
-                    distance = min(abs(cap_top - top), abs(cap_top - bottom))
-                    score = distance + (0 if cap_top <= top + 30 else 80)
-                    if best_score is None or score < best_score:
+                    # 캡션이 표 위에 있어야 함 (top 이전)
+                    if cap_top >= top:
+                        continue
+                    
+                    distance = top - cap_top
+                    # 캡션과 표 사이 거리 체크 (100 이내)
+                    if distance > 100:
+                        continue
+                    
+                    if best_score is None or distance < best_score:
                         chosen_cap = cap
-                        best_score = score
+                        best_score = distance
                 
-                title = chosen_cap['text'] if chosen_cap else f'[표 {page_idx}-{tbl_idx}]'
-                if chosen_cap:
-                    used_caption_keys.add((chosen_cap['page_num'], chosen_cap['text']))
+                # 캡션이 반드시 있어야 함
+                if not chosen_cap:
+                    logger.info(f'[표 캡션 없음] p{page_idx} tbl{tbl_idx} 제거')
+                    continue
                 
-                # 원문 텍스트 생성
+                title = chosen_cap['text']
+                used_caption_keys.add((chosen_cap['page_num'], chosen_cap['text']))
+                
+                # 원문 텍스트
                 content_text_raw = '\n'.join(['|'.join(row) for row in cleaned_rows])
                 
                 tables_out.append({
@@ -436,16 +589,18 @@ def extract_table_blocks_from_pdf(pdf_path: str, lines: List[Dict[str, Any]]) ->
                     'content_text_normalized': clean_text(content_text_raw),
                     'table_rows_json': json.dumps(cleaned_rows, ensure_ascii=False),
                 })
+                
+                logger.info(f'✅ p{page_idx} - 표: {title[:30]}... ({len(cleaned_rows)}행 x {len(cleaned_rows[0])}열)')
     
     return sorted(tables_out, key=lambda x: (x['page_number'], x.get('position', ''), x.get('top', 0)))
 
 
 # =========================================================
-# 5. 그림 캡션 추출 (실제 캡션만)
+# 6. 그림 캡션 추출 (실제 캡션만)
 # =========================================================
 
 def _clean_figure_caption(text: str) -> str:
-    """그림 캡션 정제 (참조문장 제거)"""
+    """그림 캡션 정제"""
     text = clean_text(text)
     
     # '[그림' 앞의 본문 제거
@@ -457,38 +612,18 @@ def _clean_figure_caption(text: str) -> str:
     text = re.sub(r'\s*출처\s*[:：]\s*\S+', '', text).strip()
     text = re.sub(r'\s*[Ss]ource\s*[:：]\s*\S+', '', text).strip()
     
-    # "[표/그림 x-y]와 같이", "[표/그림 x-y]에 제시된" 같은 참조 제외
-    if re.search(r'\[(?:표|그림|Figure|Table)\s+\d+-\d+\](?:와 같이|에 제시된|와 함께|을 참고)', text):
-        return ''  # 이런 텍스트는 캡션이 아님
+    # 본문 참조문장 제외 (엄격함)
+    if re.search(r'\[그림\s*\d+-\d+\][와의이로을를으]', text):
+        return ''  # 참조문장
+    if re.search(r'\[그림\s*\d+-\d+\](?:의 오른쪽|의 왼쪽|과 같이|에 제시된|과 함께|을 참고)', text):
+        return ''
     
     return text
 
 
-def _split_figure_caption_line(text: str) -> List[str]:
-    """한 라인에 여러 그림 캡션이 있으면 분리"""
-    text = clean_text(text)
-    matches = list(re.finditer(r'\[그림\s*\d+-\d+\]', text))
-    if not matches:
-        return []
-    if len(matches) == 1:
-        cleaned = _clean_figure_caption(text)
-        return [cleaned] if cleaned else []
-    
-    parts = []
-    for i, m in enumerate(matches):
-        start = m.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        part = _clean_figure_caption(text[start:end].strip())
-        if part:
-            parts.append(part)
-    
-    return parts
-
-
 def extract_figure_blocks_from_lines(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    그림 캡션 추출 (실제 캡션만)
-    반환: [{title, type, page_number, position, top, context_before_raw, ...}, ...]
+    그림 캡션 추출 (줄 시작이 [그림 x-y]인 실제 캡션만)
     """
     figures = []
     
@@ -500,15 +635,19 @@ def extract_figure_blocks_from_lines(lines: List[Dict[str, Any]]) -> List[Dict[s
         col_lines = sorted(col_lines, key=lambda x: x.get('top', 0))
         
         for idx, line in enumerate(col_lines):
-            txt = line['text']
-            if '[그림' not in txt:
+            txt = line['text'].strip()
+            
+            # 줄 시작이 [그림 x-y]인 경우만 처리
+            if not re.match(r'^\[그림\s*\d+-\d+\]', txt):
                 continue
             
-            caption_parts = _split_figure_caption_line(txt)
-            if not caption_parts:
+            caption = _clean_figure_caption(txt)
+            
+            # 빈 캡션이면 제외
+            if not caption or len(caption) < 5:
                 continue
             
-            # 앞의 문맥 수집 (캡션 아닌 부분, 출처 제외)
+            # 앞의 문맥 수집
             prev_context = []
             j = idx - 1
             while j >= 0 and len(prev_context) < 6:
@@ -525,27 +664,29 @@ def extract_figure_blocks_from_lines(lines: List[Dict[str, Any]]) -> List[Dict[s
             cap_top = line.get('top', 0)
             cap_pos = line.get('position', '')
             
-            for part in caption_parts:
-                figures.append({
-                    'title': part,
-                    'type': 'figure',
-                    'page_number': page_num,
-                    'position': cap_pos,
-                    'top': cap_top,
-                    'caption_text': part,
-                    'context_before_raw': '\n'.join(prev_context),
-                })
+            figures.append({
+                'title': caption,
+                'type': 'figure',
+                'page_number': page_num,
+                'position': cap_pos,
+                'top': cap_top,
+                'caption_text': caption,
+                'context_before_raw': '\n'.join(prev_context),
+            })
+            
+            logger.info(f'✅ p{page_num} - 그림: {caption[:30]}...')
     
     return figures
 
 
 # =========================================================
-# 6. 블록을 소절에 매핑
+# 7. 블록을 소절에 매핑 (보정)
 # =========================================================
 
 def map_blocks_to_subsections(structure: Dict[str, List[Dict[str, Any]]], blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    표/그림을 소절에 매핑 (page + position + top 기준)
+    블록을 소절에 매핑 (page + position + top 기준)
+    실패 시 nearest previous subsection으로 보정
     """
     def pos_order(p: str) -> int:
         return 0 if p == 'left' else 1
@@ -560,6 +701,7 @@ def map_blocks_to_subsections(structure: Dict[str, List[Dict[str, Any]]], blocks
         y = info.get('top', 0)
         blk_key = (page, pos_order(pos), y)
         
+        # 정확한 매칭
         matched = None
         for sub in global_subs:
             sub_key = (sub['page_number'], pos_order(sub.get('position', 'left')), sub.get('top', 0))
@@ -568,83 +710,120 @@ def map_blocks_to_subsections(structure: Dict[str, List[Dict[str, Any]]], blocks
             else:
                 break
         
-        results.append({
-            'chapter': matched.get('chapter', '') if matched else '',
-            'chapter_title': matched.get('chapter_title', '') if matched else '',
-            'section': matched.get('section', '') if matched else '',
-            'section_title': matched.get('section_title', '') if matched else '',
-            'subsection': matched.get('subsection', '') if matched else '',
-            'subsection_title': matched.get('subsection_title', '') if matched else '',
-            'page_number': info['page_number'],
-            'position': info.get('position', ''),
-            'top': info.get('top', 0),
-            'title': info['title'],
-            'type': info['type'],
-            'table_rows': info.get('table_rows', []),
-            'table_rows_json': info.get('table_rows_json', ''),
-            'content_text_raw': info.get('content_text_raw', ''),
-            'content_text_normalized': info.get('content_text_normalized', ''),
-            'caption_text': info.get('caption_text', ''),
-            'context_before_raw': info.get('context_before_raw', ''),
-        })
+        # 매칭 실패 시 보정: 같은 page/position에서 nearest previous subsection
+        if not matched:
+            for sub in reversed(global_subs):
+                if sub['page_number'] == page and sub['position'] == pos:
+                    matched = sub
+                    break
+        
+        if matched:
+            results.append({
+                'chapter': matched.get('chapter', ''),
+                'chapter_title': matched.get('chapter_title', ''),
+                'section': matched.get('section', ''),
+                'section_title': matched.get('section_title', ''),
+                'subsection': matched.get('subsection', ''),
+                'subsection_title': matched.get('subsection_title', ''),
+                'page_number': info['page_number'],
+                'position': info.get('position', ''),
+                'top': info.get('top', 0),
+                'title': info['title'],
+                'type': info['type'],
+                'table_rows': info.get('table_rows', []),
+                'table_rows_json': info.get('table_rows_json', ''),
+                'content_text_raw': info.get('content_text_raw', ''),
+                'content_text_normalized': info.get('content_text_normalized', ''),
+                'caption_text': info.get('caption_text', ''),
+                'context_before_raw': info.get('context_before_raw', ''),
+            })
+        else:
+            # 매칭 실패한 블록도 추가 (빈 값으로)
+            results.append({
+                'chapter': '',
+                'chapter_title': '',
+                'section': '',
+                'section_title': '',
+                'subsection': '',
+                'subsection_title': '',
+                'page_number': info['page_number'],
+                'position': info.get('position', ''),
+                'top': info.get('top', 0),
+                'title': info['title'],
+                'type': info['type'],
+                'table_rows': info.get('table_rows', []),
+                'table_rows_json': info.get('table_rows_json', ''),
+                'content_text_raw': info.get('content_text_raw', ''),
+                'content_text_normalized': info.get('content_text_normalized', ''),
+                'caption_text': info.get('caption_text', ''),
+                'context_before_raw': info.get('context_before_raw', ''),
+            })
     
     return results
 
 
 # =========================================================
-# 7. Generation 행 생성
+# 8. 문제 유형 분류
 # =========================================================
 
 def classify_question_type(text: str) -> str:
-    """문제 유형 분류"""
+    """문제 유형 분류 (chunk/table/figure 각각)"""
     t = text.strip()
+    if not t:
+        return '특징'
+    
     if re.search(r'(을 말한다|를 말한다|의미한다|정의)', t):
         return '정의'
-    if re.search(r'\d', t) and re.search(r'(m|mm|cm|kgf|kW|%|이상|이하|강도|높이)', t):
+    if re.search(r'\d', t) and re.search(r'(m|mm|cm|kgf|kW|%|이상|이하|강도|높이|폭|간격)', t):
         return '수치'
-    if re.search(r'(순서|먼저|이후|다음의|후에|역순)', t):
+    if re.search(r'(순서|먼저|이후|다음의|후에|역순|절차)', t):
         return '순서'
-    if re.search(r'(분류|종류|구분|구성|나뉜)', t):
+    if re.search(r'(분류|종류|구분|구성|나뉜|체계)', t):
         return '분류'
     if re.search(r'(장점|유리|절감|향상|효과)', t):
         return '장점'
-    if re.search(r'(단점|문제|불리|주의)', t):
+    if re.search(r'(단점|문제|불리|주의|제한)', t):
         return '단점'
+    
     return '특징'
 
 
-def build_generation_rows(structure: Dict[str, List[Dict[str, Any]]], 
+# =========================================================
+# 9. Generation 행 생성 (chunk 기반, figure별도)
+# =========================================================
+
+def build_generation_rows(text_chunks: List[Dict[str, Any]], 
                           mapped_tables: List[Dict[str, Any]],
-                          mapped_figures: List[Dict[str, Any]],
-                          source_file: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                          source_file: str,
+                          include_figures: bool = False) -> pd.DataFrame:
     """
-    Generation_Input 및 Support_Visuals 시트 생성
+    Generation_Input 시트 생성
+    figure rows는 Support_Visuals에만 저장 (include_figures=False 시)
     """
-    gen_rows = []
-    visual_rows = []
+    rows = []
     gen_idx = 1
     
-    # 1. 텍스트 (본문)
-    for sub in structure['subsections']:
-        text = sub.get('text', '').strip()
+    # 1. Text chunks
+    for chunk in text_chunks:
+        text = chunk.get('text', '').strip()
         if not text:
             continue
         
         qtype = classify_question_type(text)
         
-        gen_rows.append({
+        rows.append({
             'gen_id': f'GEN_{gen_idx:04d}',
-            'source_row_id': f"TXT_{sub.get('subsection', '').replace('.', '_')}",
+            'source_row_id': chunk.get('chunk_id', ''),
             'use_for_generation_yn': 'Y',
             'source_type': 'text',
-            'page_no': sub.get('page_number', ''),
-            'chapter': sub.get('chapter', ''),
-            'chapter_title': sub.get('chapter_title', ''),
-            'section': sub.get('section', ''),
-            'section_title': sub.get('section_title', ''),
-            'subsection': sub.get('subsection', ''),
-            'subsection_title': sub.get('subsection_title', ''),
-            'item_title': sub.get('subsection_title', ''),
+            'page_no': chunk.get('page_number', ''),
+            'chapter': chunk.get('chapter', ''),
+            'chapter_title': chunk.get('chapter_title', ''),
+            'section': chunk.get('section', ''),
+            'section_title': chunk.get('section_title', ''),
+            'subsection': chunk.get('subsection', ''),
+            'subsection_title': chunk.get('subsection_title', ''),
+            'item_title': chunk.get('subsection_title', ''),
             'source_text': text,
             'source_text_raw': text,
             'source_text_normalized': normalize_text(text),
@@ -657,11 +836,11 @@ def build_generation_rows(structure: Dict[str, List[Dict[str, Any]]],
         })
         gen_idx += 1
     
-    # 2. 표
+    # 2. Tables
     for idx, tbl in enumerate(mapped_tables, start=1):
         qtype = classify_question_type(tbl.get('title', ''))
         
-        gen_rows.append({
+        rows.append({
             'gen_id': f'GEN_{gen_idx:04d}',
             'source_row_id': f'TBL_{idx:03d}',
             'use_for_generation_yn': 'Y' if tbl.get('table_rows') else 'N',
@@ -686,14 +865,20 @@ def build_generation_rows(structure: Dict[str, List[Dict[str, Any]]],
         })
         gen_idx += 1
     
-    # 3. 그림
+    return pd.DataFrame(rows)
+
+
+def build_support_visuals(mapped_figures: List[Dict[str, Any]], source_file: str) -> pd.DataFrame:
+    """
+    Support_Visuals 시트 생성
+    """
+    rows = []
+    
     for idx, fig in enumerate(mapped_figures, start=1):
         qtype = classify_question_type(fig.get('caption_text', ''))
         
-        gen_rows.append({
-            'gen_id': f'GEN_{gen_idx:04d}',
-            'source_row_id': f'FIG_{idx:03d}',
-            'use_for_generation_yn': 'Y',
+        rows.append({
+            'row_id': f'FIG_{idx:03d}',
             'source_type': 'figure',
             'page_no': fig.get('page_number', ''),
             'chapter': fig.get('chapter', ''),
@@ -702,35 +887,18 @@ def build_generation_rows(structure: Dict[str, List[Dict[str, Any]]],
             'section_title': fig.get('section_title', ''),
             'subsection': fig.get('subsection', ''),
             'subsection_title': fig.get('subsection_title', ''),
-            'item_title': fig.get('title', ''),
-            'source_text': fig.get('caption_text', ''),
-            'source_text_raw': fig.get('caption_text', ''),
-            'source_text_normalized': normalize_text(fig.get('caption_text', '')),
+            'caption_text': fig.get('caption_text', ''),
+            'visual_context_raw': fig.get('context_before_raw', ''),
             'question_type_label': qtype,
-            'table_title': '',
-            'table_rows_json': '',
-            'caption_text': fig.get('caption_text', ''),
-            'visual_context_raw': fig.get('context_before_raw', ''),
             'source_file': source_file,
         })
-        
-        visual_rows.append({
-            'row_id': f'FIG_{idx:03d}',
-            'source_type': 'figure',
-            'page_no': fig.get('page_number', ''),
-            'chapter': fig.get('chapter', ''),
-            'section': fig.get('section', ''),
-            'subsection': fig.get('subsection', ''),
-            'subsection_title': fig.get('subsection_title', ''),
-            'caption_text': fig.get('caption_text', ''),
-            'visual_context_raw': fig.get('context_before_raw', ''),
-            'source_file': source_file,
-        })
-        
-        gen_idx += 1
     
-    return pd.DataFrame(gen_rows), pd.DataFrame(visual_rows)
+    return pd.DataFrame(rows)
 
+
+# =========================================================
+# 10. 안내 시트
+# =========================================================
 
 def build_type_guidelines() -> pd.DataFrame:
     """Type_Guidelines 시트"""
@@ -749,21 +917,27 @@ def build_type_guidelines() -> pd.DataFrame:
 def build_readme(pdf_path: str, output_path: str) -> pd.DataFrame:
     """README 시트"""
     rows = [
-        ['스크립트', 'extract_pdf_v3.py'],
+        ['스크립트', 'extract_pdf_v4.py'],
         ['입력 PDF', pdf_path],
         ['출력 Excel', output_path],
         ['시트 목록', 'Generation_Input, Type_Guidelines, Support_Visuals, README'],
-        ['추출 전략', '본문/표/그림 분리 파이프라인'],
-        ['표 처리', 'Raw 구조 유지, table_rows_json 저장'],
-        ['그림 처리', '실제 캡션만 추출, 참조 문장 제외'],
-        ['소절 매핑', 'page + position + top 기준'],
+        ['추출 전략', '본문(chunk)/표/그림 분리 파이프라인'],
+        ['텍스트 분할', 'Semantic chunk 단위 (참조/캡션/식 제거)'],
+        ['표 처리', 'Caption 확인 + 2행2열 이상 + raw 구조 유지'],
+        ['그림 처리', '줄 시작 [그림 x-y] 실제 캡션만 추출'],
+        ['소절 매핑', 'page + position + top 기준 (보정 포함)'],
+        ['정확도 우선', '많이 잡는 것보다 정확하게 잡는 것 우선'],
     ]
     return pd.DataFrame(rows, columns=['key', 'value'])
 
 
+# =========================================================
+# 11. Excel 저장
+# =========================================================
+
 def save_excel(output_path: str, df_gen: pd.DataFrame, df_type: pd.DataFrame,
                df_visuals: pd.DataFrame, df_readme: pd.DataFrame) -> None:
-    """Excel 저장"""
+    """Excel 저장 (4개 시트)"""
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         df_gen.to_excel(writer, index=False, sheet_name='Generation_Input')
         df_type.to_excel(writer, index=False, sheet_name='Type_Guidelines')
@@ -792,13 +966,15 @@ def save_excel(output_path: str, df_gen: pd.DataFrame, df_type: pd.DataFrame,
 
 
 # =========================================================
-# 8. 메인
+# 12. 메인
 # =========================================================
 
 def main():
-    parser = argparse.ArgumentParser(description='PDF → Excel (본문/표/그림 분리)')
+    parser = argparse.ArgumentParser(description='PDF → Excel (improved v4)')
     parser.add_argument('--pdf', required=True, help='입력 PDF')
     parser.add_argument('--output', default='generation_ready.xlsx', help='출력 Excel')
+    parser.add_argument('--include-figures-in-gen', action='store_true', 
+                        help='Generation_Input에 figure rows 포함 (기본: Support_Visuals에만)')
     args = parser.parse_args()
     
     pdf_path = args.pdf
@@ -809,10 +985,10 @@ def main():
         return
     
     logger.info('=' * 70)
-    logger.info('📄 PDF 추출 시작 (본문/표/그림 분리 파이프라인)')
+    logger.info('📄 PDF 추출 시작 (v4: Chunk 기반 분할 + Valid Table/Caption만)')
     logger.info('=' * 70)
     
-    # Step 1: 라�� 추출
+    # Step 1: 라인 추출
     logger.info('Step 1: 레이아웃 정보 포함해 라인 추출 중...')
     lines = extract_lines_with_layout(pdf_path)
     logger.info(f'✅ {len(lines)}개 라인 추출')
@@ -827,46 +1003,56 @@ def main():
     fill_subsection_texts(structure, lines)
     logger.info('✅ 텍스트 수집 완료')
     
-    # Step 4: 표 추출
-    logger.info('Step 4: 표 추출 중...')
-    table_blocks = extract_table_blocks_from_pdf(pdf_path, lines)
-    logger.info(f'✅ {len(table_blocks)}개 표 추출')
+    # Step 4: 텍스트 청킹 (NEW)
+    logger.info('Step 4: 텍스트를 semantic chunk로 분할 중...')
+    text_chunks = build_text_chunks(structure['subsections'])
+    logger.info(f'✅ {len(text_chunks)}개 chunk 생성')
     
-    # Step 5: 그림 추출
-    logger.info('Step 5: 그림 캡션 추출 중...')
+    # Step 5: 표 추출
+    logger.info('Step 5: 표 추출 중 (caption 확인, valid table만)...')
+    table_blocks = extract_table_blocks_from_pdf(pdf_path, lines)
+    logger.info(f'✅ {len(table_blocks)}개 valid 표 추출')
+    
+    # Step 6: 그림 추출
+    logger.info('Step 6: 그림 캡션 추출 중 ([그림 x-y] 시작 라인만)...')
     figure_blocks = extract_figure_blocks_from_lines(lines)
     logger.info(f'✅ {len(figure_blocks)}개 그림 캡션 추출')
     
-    # Step 6: 블록 매핑
-    logger.info('Step 6: 블록을 소절에 매핑 중...')
+    # Step 7: 블록 매핑
+    logger.info('Step 7: 블록을 소절에 매핑 중...')
     mapped_tables = map_blocks_to_subsections(structure, table_blocks)
     mapped_figures = map_blocks_to_subsections(structure, figure_blocks)
     logger.info(f'✅ 매핑 완료')
     
-    # Step 7: Generation 행 생성
-    logger.info('Step 7: Generation 행 생성 중...')
-    df_gen, df_visuals = build_generation_rows(structure, mapped_tables, mapped_figures, 
-                                                os.path.basename(pdf_path))
+    # Step 8: Generation 행 생성 (chunk 기반)
+    logger.info('Step 8: Generation_Input 행 생성 중...')
+    df_gen = build_generation_rows(text_chunks, mapped_tables, 
+                                   os.path.basename(pdf_path),
+                                   include_figures=args.include_figures_in_gen)
     logger.info(f'✅ {len(df_gen)}개 행 생성')
     
-    # Step 8: 안내 시트 생성
-    logger.info('Step 8: 안내 시트 생성 중...')
+    # Step 9: Support_Visuals 생성
+    logger.info('Step 9: Support_Visuals 시트 생성 중...')
+    df_visuals = build_support_visuals(mapped_figures, os.path.basename(pdf_path))
+    logger.info(f'✅ {len(df_visuals)}개 visual 항목')
+    
+    # Step 10: 안내 시트
+    logger.info('Step 10: 안내 시트 생성 중...')
     df_type = build_type_guidelines()
     df_readme = build_readme(pdf_path, output_path)
     
-    # Step 9: Excel 저장
-    logger.info('Step 9: Excel 저장 중...')
+    # Step 11: Excel 저장
+    logger.info('Step 11: Excel 저장 중...')
     save_excel(output_path, df_gen, df_type, df_visuals, df_readme)
     
+    # 통계
     logger.info('=' * 70)
     logger.info('🎉 완료!')
-    # ✅ 수정: DataFrame 접근 방식 변경
     text_count = len(df_gen[df_gen['source_type'] == 'text'])
     table_count = len(df_gen[df_gen['source_type'] == 'table'])
-    figure_count = len(df_gen[df_gen['source_type'] == 'figure'])
-    logger.info(f'📊 본문: {text_count}개')
-    logger.info(f'📊 표: {table_count}개')
-    logger.info(f'📊 그림: {figure_count}개')
+    logger.info(f'📝 Text chunk: {text_count}개')
+    logger.info(f'📊 Table: {table_count}개')
+    logger.info(f'🖼️  Figure: {len(df_visuals)}개')
     logger.info('=' * 70)
 
 
